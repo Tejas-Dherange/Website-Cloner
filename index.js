@@ -468,6 +468,79 @@ async function validateAndFixPaths(input = "") {
   }
 }
 
+async function getUrlsInWebsitePage(url) {
+  try {
+    const { data } = await axios.get(url);  // fetch HTML
+    const $ = cheerio.load(data);
+
+    const links = new Set(); // to keep only unique values
+
+    $("a").each((i, el) => {
+      const href = $(el).attr("href");
+      if (href && href.startsWith("/")) {
+        links.add(href); // add to Set (auto removes duplicates)
+      }
+    });
+
+    let paths=[...links].filter(p => p !== "/");
+    console.log("Found URLs:", paths);
+
+    return paths; // convert Set back to array
+
+  } catch (err) {
+    console.error("Error scraping:", err.message);
+    return [];
+  }
+}
+
+//function to check all pages in main html file are linked with other cloned subpages in current cloned directory
+//if not update all properly
+
+async function updateSubpageLinksInMainHtml(input = "") {
+  try {
+    // Parse the input - expect "mainHtmlPath|||subpage1,subpage2,subpage3"
+    const parts = input.split('|||');
+    const mainHtmlPath = parts[0].trim();
+    const subpagePaths = parts[1] ? parts[1].split(',').map(p => p.trim()) : [];
+    
+    if (!mainHtmlPath) {
+      return "Error: Main HTML path is required";
+    }
+
+    const mainHtml = await fs.readFile(mainHtmlPath, 'utf8');
+    const $ = cheerio.load(mainHtml);
+
+    let updatedCount = 0;
+
+    $("a").each((_, el) => {
+      const href = $(el).attr("href");
+      if (href) {
+        // Find matching subpage
+        const matchingSubpage = subpagePaths.find(p => {
+          const pageName = p.replace(/^.*\//, ''); // get filename
+          return href.includes(pageName) || href.endsWith(pageName);
+        });
+        
+        if (matchingSubpage) {
+          const relativePath = `./${matchingSubpage.replace(/^.*\//, '')}/index.html`;
+          $(el).attr("href", relativePath);
+          updatedCount++;
+        }
+      }
+    });
+
+    if (updatedCount > 0) {
+      await fs.writeFile(mainHtmlPath, $.html());
+      return `✅ Updated ${updatedCount} links in main HTML file`;
+    } else {
+      return "ℹ️ No links needed updating";
+    }
+
+  } catch (error) {
+    return `❌ Error updating subpage links: ${error.message}`;
+  }
+}
+
 const TOOL_MAP = {
   getWeatherDetailsByCity: getWeatherDetailsByCity,
   getGithubUserInfoByUsername: getGithubUserInfoByUsername,
@@ -475,6 +548,8 @@ const TOOL_MAP = {
   writeFileContent: writeFileContent,
   cloneSite: cloneSite,
   validateAndFixPaths: validateAndFixPaths,
+  getUrlsInWebsitePage: getUrlsInWebsitePage,
+  updateSubpageLinksInMainHtml: updateSubpageLinksInMainHtml
 };
 
 const client = new OpenAI();
@@ -499,7 +574,8 @@ async function main() {
     - writeFileContent(input: string): Creates a file with specified content. Input format: "filepath|||content" where ||| separates the file path from the content
     - cloneSite(input: string): Clones a website's HTML, CSS, and JS assets to a local directory. Input format: "siteUrl|||outputDir" or "siteUrl, outputDir". Creates separate folders: css/, js/, images/
     - validateAndFixPaths(input: string): Validates all relative paths in a cloned website directory and reports any issues
-
+    - getUrlsInWebsitePage(input: string): Scrapes a webpage and returns array of all the paths of sub-pages found on the page
+    - updateSubpageLinksInMainHtml(input: string): Updates the main HTML file with links to cloned subpages
     IMPORTANT for file creation:
     - For creating HTML/CSS/JS files, ALWAYS use the writeFileContent tool instead of executeCommand with echo
     - The writeFileContent tool properly handles newlines, quotes, and special characters
@@ -519,6 +595,7 @@ async function main() {
     - after cloning a site, always remember to update the HTML file paths
     - ensure that all asset URLs are relative to the new directory structure
     - when cloning is complete, automatically run path validation to ensure everything works
+    - Never clone path '/' page again bacause it already exists in the cloned directory
 
 
     Output JSON Format:
@@ -537,15 +614,22 @@ async function main() {
 
     Example for cloning a site:
     user: Hey,clone this url https://tejas-portfolio.codeloom.software in folder name Portfolio;
-    ASSISTANT: { "step": "START", "content": "The user wants to clone a website into a specific folder." }
-    ASSISTANT: { "step": "THINK", "content": "I need to call the cloneSite function with the provided URL and folder name using the proper input format." }
-    ASSISTANT: { "step": "TOOL", "input": "https://tejas-portfolio.codeloom.software|||Portfolio", "tool_name": "cloneSite" }
-    DEVELOPER: { "step": "OBSERVE", "content": "✅ Successfully cloned https://tejas-portfolio.codeloom.software to Portfolio\n📁 Structure: css/ (1 files), js/ (10 files), images/ (21 files)\n🔍 Path validation: 32/32 valid paths" }
-    ASSISTANT: { "step": "THINK", "content": "The website has been successfully cloned with proper folder structure. Now I should validate the paths to ensure everything is working correctly." }
-    ASSISTANT: { "step": "TOOL", "input": "Portfolio", "tool_name": "validateAndFixPaths" }
-    DEVELOPER: { "step": "OBSERVE", "content": "🔍 Path Validation Report for Portfolio:\n📊 Total paths: 32\n✅ Valid paths: 32\n❌ Invalid paths: 0\n\n🎉 All paths are valid! The cloned site should work properly." }
-    ASSISTANT: { "step": "THINK", "content": "Perfect! All paths have been validated and the cloned website is fully functional." }
-    ASSISTANT: { "step": "OUTPUT", "content": "The website has been successfully cloned into the Portfolio folder with organized structure: CSS files in css/ folder, JavaScript files in js/ folder, and images in images/ folder. All 32 asset paths have been validated and are working correctly. The cloned site is fully functional and ready to use." }
+   step-1 : ASSISTANT: { "step": "START", "content": "The user wants to clone a website into a specific folder." }
+   step-2 : ASSISTANT: { "step": "THINK", "content": "I need to call the cloneSite function with the provided URL and folder name using the proper input format." }
+   step-3 : ASSISTANT: { "step": "TOOL", "input": "https://tejas-portfolio.codeloom.software|||Portfolio", "tool_name": "cloneSite" }
+   step-4 : DEVELOPER: { "step": "OBSERVE", "content": "✅ Successfully cloned https://tejas-portfolio.codeloom.software to Portfolio\n📁 Structure: css/ (1 files), js/ (10 files), images/ (21 files)\n🔍 Path validation: 32/32 valid paths" }
+   step-5 : ASSISTANT: { "step": "THINK", "content": "The website has been successfully cloned with proper folder structure. Now I should validate the paths to ensure everything is working correctly." }
+   step-6 : ASSISTANT: { "step": "TOOL", "input": "Portfolio", "tool_name": "validateAndFixPaths" }
+   step-7 : DEVELOPER: { "step": "OBSERVE", "content": "🔍 Path Validation Report for Portfolio:\n📊 Total paths: 32\n✅ Valid paths: 32\n❌ Invalid paths: 0\n\n🎉 All paths are valid! The cloned site should work properly." }
+   step-8 : ASSISTANT: { "step": "THINK", "content": "Now get the all urls from this page" }
+   step-9 : ASSISTANT: { "step": "TOOL", "input": "https://tejas-portfolio.codeloom.software/about", "tool_name": "getUrlsInWebsitePage" }
+   step-10 : ASSISTANT: { "step": "OBSERVE", "content": "Now I need to extract the pages code from the unique paths from the tool of  website cloning called cloneSite. start from step 3 again by continuing path for existing provided url of main page till all path array is not finished" }
+   step-11 : ASSISTANT: { "step": "OBSERVE", "content": "Now check the all paths of the subpages in main html page" }
+   step-12 : DEVELOPER: { "step": "OBSERVE", "content": "🔍 Found paths in Portfolio:https://tejas-portfolio.codeloom.software" }
+   step-13 : ASSISTANT: { "step": "THINK", "content": "Now change the paths of cloned subpages to match the new directory structure in main html file of base page" }
+   step-14 : ASSISTANT: { "step": "TOOL", "input": "Portfolio/index.html|||projects,contact", "tool_name": "updateSubpageLinksInMainHtml" }
+   step-14 : ASSISTANT: { "step": "THINK", "content": "Perfect! All paths have been validated and the cloned website is fully functional." }
+   step-15 : ASSISTANT: { "step": "OUTPUT", "content": "The website has been successfully cloned into the Portfolio folder with organized structure: CSS files in css/ folder, JavaScript files in js/ folder, and images in images/ folder. All 32 asset paths have been validated and are working correctly. The cloned site is fully functional and ready to use." }
 
   `;
 
@@ -557,7 +641,7 @@ async function main() {
     {
       role: "user",
       content:
-        'clone this website https://code.visualstudio.com to folder "vscode-clone"',
+        'clone this website https://www.piyushgarg.dev to folder "piyush-clone"',
     },
   ];
 
@@ -639,3 +723,4 @@ async function main() {
 }
 
 main();
+// getUrlsInWebsitePage("https://www.piyushgarg.dev/")
